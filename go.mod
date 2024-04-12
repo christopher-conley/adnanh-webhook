@@ -19,4 +19,6 @@ require (
 	gopkg.in/check.v1 v1.0.0-20190902080502-41f04d3bba15 // indirect
 	golang.org/x/net v0.14.0 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
+	github.com/prometheus/client_golang v1.14.0
+	gopkg.in/fsnotify.v1 v1.4.7
 )

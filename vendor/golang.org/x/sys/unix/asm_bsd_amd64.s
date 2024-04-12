@@ -6,6 +6,10 @@
 
 #include "textflag.h"
 
+// System call support for ARM64 BSD
+
+#include "textflag.h"
+
 // System call support for AMD64 BSD
 
 // Just jump to package syscall's implementation for all these functions.

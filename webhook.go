@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"io/ioutil"
 	"log"
 	"net"
@@ -20,13 +19,18 @@ import (
 	"github.com/adnanh/webhook/internal/middleware"
 	"github.com/adnanh/webhook/internal/pidfile"
 
-	"github.com/fsnotify/fsnotify"
-	chimiddleware "github.com/go-chi/chi/v5/middleware"
+	chimiddleware "github.com/go-chi/chi/middleware"
 	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	fsnotify "gopkg.in/fsnotify.v1"
 )
 
 const (
-	version = "2.8.1"
+	version          = "2.8.0"
+	metricsNamespace = "webhook"
 )
 
 var (
@@ -53,6 +57,7 @@ var (
 	setUID             = flag.Int("setuid", 0, "set user ID after opening listening port; must be used with setgid")
 	httpMethods        = flag.String("http-methods", "", `set default allowed HTTP methods (ie. "POST"); separate methods with comma`)
 	pidPath            = flag.String("pidfile", "", "create PID file at the given path")
+	metrics            = flag.Bool("metrics", false, "enable prometheus metrics at /metrics")
 
 	responseHeaders hook.ResponseHeaders
 	hooksFiles      hook.HooksFiles
@@ -62,6 +67,31 @@ var (
 	watcher *fsnotify.Watcher
 	signals chan os.Signal
 	pidFile *pidfile.PIDFile
+)
+
+// prometheus metrics
+var hookCounter = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Namespace: metricsNamespace,
+		Name:      "hook_requests_total",
+		Help:      "Total number of hook requests",
+	}, []string{"hook"},
+)
+
+var hookErrorCounter = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Namespace: metricsNamespace,
+		Name:      "hook_errors_total",
+		Help:      "Total number of hook errors",
+	}, []string{"hook", "error"},
+)
+
+var hookSuccessCounter = promauto.NewCounterVec(
+	prometheus.CounterOpts{
+		Namespace: metricsNamespace,
+		Name:      "hook_success_total",
+		Help:      "Total number of successful hook executions",
+	}, []string{"hook"},
 )
 
 func matchLoadedHook(id string) *hook.Hook {
@@ -266,14 +296,15 @@ func main() {
 	hooksURL := makeRoutePattern(hooksURLPrefix)
 
 	r.HandleFunc("/", func(w http.ResponseWriter, req *http.Request) {
-		for _, responseHeader := range responseHeaders {
-			w.Header().Set(responseHeader.Name, responseHeader.Value)
-		}
-
 		fmt.Fprint(w, "OK")
 	})
 
 	r.HandleFunc(hooksURL, hookHandler)
+
+	if *metrics {
+		// add /metrics handler
+		r.Handle("/metrics", promhttp.Handler())
+	}
 
 	// Create common HTTP server settings
 	svr := &http.Server{
@@ -320,6 +351,8 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hookCounter.With(prometheus.Labels{"hook": matchedHook.ID}).Inc()
+
 	// Check for allowed methods
 	var allowedMethod bool
 
@@ -345,6 +378,8 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if !allowedMethod {
+		hookErrorCounter.With(prometheus.Labels{"hook": matchedHook.ID, "error": "invalid_method"}).Inc()
+
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		log.Printf("[%s] HTTP %s method not allowed for hook %q", req.ID, r.Method, id)
 
@@ -545,6 +580,8 @@ func hookHandler(w http.ResponseWriter, r *http.Request) {
 		writeHttpResponseCode(w, req.ID, matchedHook.ID, matchedHook.TriggerRuleMismatchHttpResponseCode)
 	}
 
+	hookErrorCounter.With(prometheus.Labels{"hook": matchedHook.ID, "error": "rules"}).Inc()
+
 	// if none of the hooks got triggered
 	log.Printf("[%s] %s got matched, but didn't get triggered because the trigger rules were not satisfied\n", req.ID, matchedHook.ID)
 
@@ -564,6 +601,7 @@ func handleHook(h *hook.Hook, r *hook.Request) (string, error) {
 
 	cmdPath, err := exec.LookPath(lookpath)
 	if err != nil {
+		hookErrorCounter.With(prometheus.Labels{"hook": h.ID, "error": "command"}).Inc()
 		log.Printf("[%s] error in %s", r.ID, err)
 
 		// check if parameters specified in execute-command by mistake
@@ -576,9 +614,6 @@ func handleHook(h *hook.Hook, r *hook.Request) (string, error) {
 	}
 
 	cmd := exec.Command(cmdPath)
-	if h.RunAs != "" {
-		setUser(cmd, h.RunAs)
-	}
 	cmd.Dir = h.CommandWorkingDirectory
 
 	cmd.Args, errors = h.ExtractCommandArguments(r)
@@ -619,52 +654,6 @@ func handleHook(h *hook.Hook, r *hook.Request) (string, error) {
 		envs = append(envs, files[i].EnvName+"="+tmpfile.Name())
 	}
 
-	if h.KeepFileEnvironment && r.RawRequest != nil && r.RawRequest.MultipartForm != nil {
-		for k, v := range r.RawRequest.MultipartForm.File {
-			env_name := hook.EnvNamespace + "FILE_" + strings.ToUpper(k)
-			f, err := v[0].Open()
-			if err != nil {
-				log.Printf("[%s] error open form %s file [%s]", r.ID, k, err)
-				continue
-			}
-			if f1, ok := f.(*os.File); ok {
-				log.Printf("[%s] temporary file %s", r.ID, f1.Name())
-				_ = f1.Close()
-				files = append(files, hook.FileParameter{File: f1, EnvName: env_name})
-				envs = append(envs,
-					env_name+"="+f1.Name(),
-					hook.EnvNamespace+"FILENAME_"+strings.ToUpper(k)+"="+v[0].Filename,
-				)
-				continue
-			}
-			tmpfile, err := os.CreateTemp("", ".hook-"+r.ID+"-"+k+"-*")
-			if err != nil {
-				_ = f.Close()
-				log.Printf("[%s] error creating temp file [%s]", r.ID, err)
-				continue
-			}
-			log.Printf("[%s] writing env %s file %s", r.ID, env_name, tmpfile.Name())
-			if _, err = io.Copy(tmpfile, f); err != nil {
-				log.Printf("[%s] error writing file %s [%s]", r.ID, tmpfile.Name(), err)
-				_ = f.Close()
-				_ = tmpfile.Close()
-				_ = os.Remove(tmpfile.Name())
-				continue
-			}
-			if err := tmpfile.Close(); err != nil {
-				log.Printf("[%s] error closing file %s [%s]", r.ID, tmpfile.Name(), err)
-				_ = os.Remove(tmpfile.Name())
-				continue
-			}
-			_ = f.Close()
-			files = append(files, hook.FileParameter{File: tmpfile, EnvName: env_name})
-			envs = append(envs,
-				env_name+"="+tmpfile.Name(),
-				hook.EnvNamespace+"FILENAME_"+strings.ToUpper(k)+"="+v[0].Filename,
-			)
-		}
-	}
-
 	cmd.Env = append(os.Environ(), envs...)
 
 	log.Printf("[%s] executing %s (%s) with arguments %q and environment %s using %s as cwd\n", r.ID, h.ExecuteCommand, cmd.Path, cmd.Args, envs, cmd.Dir)
@@ -674,6 +663,7 @@ func handleHook(h *hook.Hook, r *hook.Request) (string, error) {
 	log.Printf("[%s] command output: %s\n", r.ID, out)
 
 	if err != nil {
+		hookErrorCounter.With(prometheus.Labels{"hook": h.ID, "error": "command"}).Inc()
 		log.Printf("[%s] error occurred: %+v\n", r.ID, err)
 	}
 
@@ -686,6 +676,8 @@ func handleHook(h *hook.Hook, r *hook.Request) (string, error) {
 			}
 		}
 	}
+
+	hookSuccessCounter.With(prometheus.Labels{"hook": h.ID}).Inc()
 
 	log.Printf("[%s] finished handling %s\n", r.ID, h.ID)
 
