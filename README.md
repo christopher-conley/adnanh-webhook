@@ -1,3 +1,32 @@
+# NOTICE
+This is an updated implementation of [webhook](https://github.com/adnanh/webhook), including the ability to setuid/setgid on Linux. A version that runs in a Docker container [is available in a separate repo](https://github.com/christopher-conley/webhook-docker), with a prebuild image [being available here](https://github.com/christopher-conley/webhook-docker/pkgs/container/webhook-docker%2Fwebhook-ubuntu).
+
+This runs an updated version of webhook, with [the origin branch being here](https://github.com/christopher-conley/adnanh-webhook/tree/updated-webhook).
+
+The "master" branch is in sync with the [original outdated upstream repository](https://github.com/adnanh/webhook).
+
+
+This updated version of webhook has merged in all changes/security fixes/feature additions from the following long-open PRs in the original upstream repository:
+
+https://github.com/adnanh/webhook/pull/549
+
+https://github.com/adnanh/webhook/pull/624
+
+https://github.com/adnanh/webhook/pull/641
+
+https://github.com/adnanh/webhook/pull/644
+
+https://github.com/adnanh/webhook/pull/645
+
+https://github.com/adnanh/webhook/pull/646
+
+https://github.com/adnanh/webhook/pull/647
+
+https://github.com/adnanh/webhook/pull/681
+
+The README of the [original upstream repo](https://github.com/adnanh/webhook) is below.
+___
+
 # What is webhook? ![build-status][badge]
 
  <img src="https://github.com/adnanh/webhook/raw/development/docs/logo/logo-128x128.png" alt="Webhook" align="left" />
