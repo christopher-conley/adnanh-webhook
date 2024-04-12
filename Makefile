@@ -10,7 +10,7 @@ help:
 all: build release release-windows
 
 build: deps ## Build the project
-	go build -ldflags "-linkmode external -extldflags=-static"
+	CGO_ENABLED=0 go build -ldflags "-s -w"
 
 release: clean deps ## Generate releases for unix systems
 	@for arch in $(ARCHS);\
@@ -19,7 +19,7 @@ release: clean deps ## Generate releases for unix systems
 		do \
 			echo "Building $$os-$$arch"; \
 			mkdir -p build/webhook-$$os-$$arch/; \
-			GOOS=$$os GOARCH=$$arch go build -o build/webhook-$$os-$$arch/webhook; \
+			GOOS=$$os GOARCH=$$arch CGO_ENABLED=0 go build -ldflags "-s -w" -o build/webhook-$$os-$$arch/webhook; \
 			tar cz -C build -f build/webhook-$$os-$$arch.tar.gz webhook-$$os-$$arch; \
 		done \
 	done
@@ -29,7 +29,7 @@ release-windows: clean deps ## Generate release for windows
 	do \
 		echo "Building windows-$$arch"; \
 		mkdir -p build/webhook-windows-$$arch/; \
-		GOOS=windows GOARCH=$$arch go build -o build/webhook-windows-$$arch/webhook.exe; \
+		GOOS=windows GOARCH=$$arch CGO_ENABLED=0 go build -ldflags "-s -w" -o build/webhook-windows-$$arch/webhook.exe; \
 		tar cz -C build -f build/webhook-windows-$$arch.tar.gz webhook-windows-$$arch; \
 	done
 
